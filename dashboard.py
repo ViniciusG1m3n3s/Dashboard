@@ -141,16 +141,6 @@ if opcao_selecionada == "Visão Geral":
     )
     st.plotly_chart(fig_tmo)
 
-    # Tabela de pontos de atenção
-    st.subheader("Pontos de Atenção: Protocolos com Tempo Acima de 2 Minutos")
-    df_pontos_de_atencao = get_points_of_attention(df_total)
-    if not df_pontos_de_atencao.empty:
-        # Formatar o tempo na tabela em minutos e segundos
-        df_pontos_de_atencao['Tempo de Análise'] = df_pontos_de_atencao['Tempo de Análise'].apply(format_timedelta)
-        st.table(df_pontos_de_atencao[['Protocolo', 'Usuário', 'Tempo de Análise']])
-    else:
-        st.write("Nenhum protocolo com tempo acima de 2 minutos.")
-
 elif opcao_selecionada == "Métricas Individuais":
     st.header("Análise por Analista")
     
@@ -200,6 +190,17 @@ elif opcao_selecionada == "Métricas Individuais":
         color_discrete_sequence=custom_colors  # Aplicando cores personalizadas
     )
     st.plotly_chart(fig_tmo_analista)
+
+    # Adicionar pontos de atenção do analista específico
+    st.subheader(f"Pontos de Atenção de {analista_selecionado}")
+    pontos_atencao_analista = get_points_of_attention(df_analista)
+    
+    if not pontos_atencao_analista.empty:
+        st.table(pontos_atencao_analista[['Protocolo', 'Tempo de Análise']].assign(
+            **{'Tempo de Análise': pontos_atencao_analista['Tempo de Análise'].apply(format_timedelta)}
+        ))
+    else:
+        st.write("Nenhum ponto de atenção identificado para este analista.")
 
 # Botão para salvar a planilha atualizada
 if st.sidebar.button("Salvar Dados"):
