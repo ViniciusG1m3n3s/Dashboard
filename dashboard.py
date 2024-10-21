@@ -3,20 +3,79 @@ import pandas as pd
 import plotly.express as px
 import os
 from datetime import datetime
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+from diario import diario  # Importa o diário de bordo
 
-# Nome do arquivo Excel que será usado para armazenar os dados
-excel_file = 'dados_acumulados.xlsx'
+# Autenticação no Google Drive usando o client_secret.json
+def authenticate_google_drive():
+    gauth = GoogleAuth()
+    
+    # Use o arquivo baixado do Google Cloud
+    gauth.LoadCredentialsFile('client_secret.json')
 
-# Função para carregar os dados do Excel
-def load_data():
+    if gauth.credentials is None:
+        # Realiza a autenticação no navegador
+        gauth.LocalWebserverAuth()
+    elif gauth.access_token_expired:
+        # Atualiza o token expirado
+        gauth.Refresh()
+    else:
+        # Carrega as credenciais
+        gauth.Authorize()
+
+    # Salva as credenciais em um arquivo para uso futuro
+    gauth.SaveCredentialsFile('client_secret_623211291508-of9paiflonh9b9c4f0i44pg14e4apr51.apps.googleusercontent.com.json')
+
+    # Conectando ao Google Drive
+    drive = GoogleDrive(gauth)
+    return drive
+
+# Função para carregar o arquivo do Google Drive pelo nome
+def load_data_from_drive(drive, usuario):
+    file_name = f'dados_acumulados_{usuario}.xlsx'
+    # Busca o arquivo pelo nome no Google Drive
+    file_list = drive.ListFile({'q': f"title='{file_name}'"}).GetList()
+    if file_list:
+        # Baixa o arquivo
+        file = file_list[0]
+        file.GetContentFile(file_name)
+        df_total = pd.read_excel(file_name, engine='openpyxl')
+    else:
+        df_total = pd.DataFrame(columns=['Protocolo', 'Usuário', 'Status', 'Tempo de Análise', 'Próximo'])
+    return df_total
+
+# Função para salvar o arquivo no Google Drive
+def save_data_to_drive(drive, df, usuario):
+    file_name = f'dados_acumulados_{usuario}.xlsx'
+    df['Tempo de Análise'] = df['Tempo de Análise'].astype(str)
+    df.to_excel(file_name, index=False)
+
+    # Verifica se o arquivo já existe no Google Drive
+    file_list = drive.ListFile({'q': f"title='{file_name}'"}).GetList()
+    if file_list:
+        # Atualiza o arquivo existente
+        file = file_list[0]
+        file.SetContentFile(file_name)
+        file.Upload()
+    else:
+        # Cria um novo arquivo
+        file = drive.CreateFile({'title': file_name})
+        file.SetContentFile(file_name)
+        file.Upload()
+
+# Função para carregar os dados do Excel do usuário logado
+def load_data(usuario):
+    excel_file = f'dados_acumulados_{usuario}.xlsx'  # Nome do arquivo específico do usuário
     if os.path.exists(excel_file):
         df_total = pd.read_excel(excel_file, engine='openpyxl')
     else:
         df_total = pd.DataFrame(columns=['Protocolo', 'Usuário', 'Status', 'Tempo de Análise', 'Próximo'])
     return df_total
 
-# Função para salvar os dados no Excel
-def save_data(df):
+# Função para salvar os dados no Excel do usuário logado
+def save_data(df, usuario):
+    excel_file = f'dados_acumulados_{usuario}.xlsx'  # Nome do arquivo específico do usuário
     df['Tempo de Análise'] = df['Tempo de Análise'].astype(str)
     with pd.ExcelWriter(excel_file, engine='openpyxl', mode='w') as writer:
         df.to_excel(writer, index=False)
@@ -34,7 +93,7 @@ def format_timedelta(td):
     minutes, seconds = divmod(total_seconds, 60)
     return f"{minutes} min {seconds} sec"
 
-# Função para garantir que a coluna 'PRÓXIMO' esteja no formato de datetime
+# Função para garantir que a coluna 'Próximo' esteja no formato de datetime
 def convert_to_datetime_for_calculations(df):
     df['Próximo'] = pd.to_datetime(df['Próximo'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
     return df
@@ -49,15 +108,19 @@ def get_points_of_attention(df):
 def dashboard():
     st.title("Dashboard de Produtividade")
     
-    # Carregar dados acumulados do arquivo Excel
-    df_total = load_data()
+    # Autenticar no Google Drive
+    drive = authenticate_google_drive()
+    
+    # Carregar dados acumulados do arquivo Excel do usuário logado
+    usuario_logado = st.session_state.usuario_logado  # Obtém o usuário logado
+    df_total = load_data_from_drive(drive, usuario_logado)  # Carrega dados específicos do usuário
 
     st.sidebar.image("https://finchsolucoes.com.br/img/eb28739f-bef7-4366-9a17-6d629cf5e0d9.png", width=100)
     st.sidebar.text('')
 
     # Sidebar para navegação
     st.sidebar.header("Navegação")
-    opcao_selecionada = st.sidebar.selectbox("Escolha uma visão", ["Visão Geral", "Métricas Individuais"])
+    opcao_selecionada = st.sidebar.selectbox("Escolha uma visão", ["Visão Geral", "Métricas Individuais", "Diário de Bordo"])
 
     # Upload de planilha na sidebar
     uploaded_file = st.sidebar.file_uploader("Carregar nova planilha", type=["xlsx"])
@@ -65,25 +128,12 @@ def dashboard():
     if uploaded_file is not None:
         df_new = pd.read_excel(uploaded_file)
         df_total = pd.concat([df_total, df_new], ignore_index=True)
-        save_data(df_total)
+        save_data(df_total, usuario_logado)  # Atualiza a planilha específica do usuário
         st.sidebar.success(f'Arquivo "{uploaded_file.name}" carregado e processado com sucesso!')
 
     # Converte para timedelta e datetime apenas para operações temporárias
     df_total = convert_to_timedelta_for_calculations(df_total)
     df_total = convert_to_datetime_for_calculations(df_total)
-
-    # Adiciona filtros de datas na sidebar
-    st.sidebar.subheader("Filtro por Data")
-    min_date = df_total['Próximo'].min().date() if not df_total.empty else datetime.today().date()
-    max_date = df_total['Próximo'].max().date() if not df_total.empty else datetime.today().date()
-
-    data_inicial = st.sidebar.date_input("Data Inicial", min_date)
-    data_final = st.sidebar.date_input("Data Final", max_date)
-
-    if data_inicial > data_final:
-        st.sidebar.error("A data inicial não pode ser posterior à data final!")
-
-    df_total = df_total[(df_total['Próximo'].dt.date >= data_inicial) & (df_total['Próximo'].dt.date <= data_final)]
 
     custom_colors = ['#ff571c', '#7f2b0e', '#4c1908']
 
@@ -101,15 +151,32 @@ def dashboard():
     # Verifica qual opção foi escolhida no dropdown
     if opcao_selecionada == "Visão Geral":
         st.header("Visão Geral")
+
+        # Adiciona filtros de datas 
+        min_date = df_total['Próximo'].min().date() if not df_total.empty else datetime.today().date()
+        max_date = df_total['Próximo'].max().date() if not df_total.empty else datetime.today().date()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            data_inicial = st.date_input("Data Inicial", min_date)
+        with col2:
+            data_final = st.date_input("Data Final", max_date)
+
+        if data_inicial > data_final:
+            st.sidebar.error("A data inicial não pode ser posterior à data final!")
+
+        df_total = df_total[(df_total['Próximo'].dt.date >= data_inicial) & (df_total['Próximo'].dt.date <= data_final)]
+
         total_finalizados = len(df_total[df_total['Status'] == 'FINALIZADO'])
         total_reclass = len(df_total[df_total['Status'] == 'RECLASSIFICADO'])
         total_andamento = len(df_total[df_total['Status'] == 'ANDAMENTO_PRE'])
         tempo_medio = df_total[df_total['Status'] == 'FINALIZADO']['Tempo de Análise'].mean()
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total de Cadastros", total_finalizados)
-        col2.metric("Tempo Médio por Cadastro", format_timedelta(tempo_medio))
-        col3.metric("Reclassificações", total_reclass)
+        col2.metric("Reclassificações", total_reclass)
+        col3.metric("Andamentos", total_andamento)
+        col4.metric("Tempo Médio por Cadastro", format_timedelta(tempo_medio))
 
         # Gráfico de pizza para o status
         st.subheader("Distribuição de Status")
@@ -120,77 +187,3 @@ def dashboard():
             color_discrete_sequence=custom_colors
         )
         st.plotly_chart(fig_status)
-
-        # Gráfico de TMO por dia
-        st.subheader("Tempo Médio de Operação (TMO) por Dia")
-        df_tmo = calcular_tmo_por_dia(df_total)
-        fig_tmo = px.bar(
-            df_tmo,
-            x='Dia',
-            y='TMO',
-            title='TMO por Dia (em minutos)',
-            labels={'TMO': 'TMO (min)', 'Dia': 'Data'},
-            color_discrete_sequence=custom_colors
-        )
-        st.plotly_chart(fig_tmo)
-
-    elif opcao_selecionada == "Métricas Individuais":
-        st.header("Análise por Analista")
-        analista_selecionado = st.selectbox('Selecione o analista', df_total['Usuário'].unique())
-        df_analista = df_total[df_total['Usuário'] == analista_selecionado].copy()
-
-        total_finalizados_analista = len(df_analista[df_analista['Status'] == 'FINALIZADO'])
-        total_reclass_analista = len(df_analista[df_analista['Status'] == 'RECLASSIFICADO'])
-        total_andamento_analista = len(df_analista[df_analista['Status'] == 'ANDAMENTO_PRE'])
-        tempo_medio_analista = df_analista[df_analista['Status'] == 'FINALIZADO']['Tempo de Análise'].mean()
-
-        # st.write("---") - DIVISOR
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total de Cadastros", total_finalizados_analista)
-        col2.metric("Tempo Médio por Cadastro", format_timedelta(tempo_medio_analista))
-        col3.metric("Reclassificações", total_reclass_analista)
-
-        st.subheader(f"Carteiras Cadastradas por {analista_selecionado}")
-        carteiras_analista = pd.DataFrame(df_analista['Carteira'].dropna().unique(), columns=['Carteiras'])
-        st.write(carteiras_analista.to_html(index=False, justify='left', border=0), unsafe_allow_html=True)
-        st.markdown("<style>table {width: 100%;}</style>", unsafe_allow_html=True)
-
-        # Gráfico de pizza para o status do analista selecionado
-        st.subheader(f"Distribuição de Status de {analista_selecionado}")
-        fig_status_analista = px.pie(
-            names=['Finalizado', 'Reclassificado', 'Andamento'],
-            values=[total_finalizados_analista, total_reclass_analista, total_andamento_analista],
-            title=f'Distribuição de Status - {analista_selecionado}',
-            color_discrete_sequence=custom_colors
-        )
-        st.plotly_chart(fig_status_analista)
-
-        # Gráfico de TMO por dia para o analista selecionado
-        st.subheader(f"Tempo Médio de Operação (TMO) por Dia de {analista_selecionado}")
-        df_tmo_analista = calcular_tmo_por_dia(df_analista)
-        fig_tmo_analista = px.bar(
-            df_tmo_analista,
-            x='Dia',
-            y='TMO',
-            title=f'TMO por Dia - {analista_selecionado} (em minutos)',
-            labels={'TMO': 'TMO (min)', 'Dia': 'Data'},
-            color_discrete_sequence=custom_colors
-        )
-        st.plotly_chart(fig_tmo_analista)
-
-        # Adicionar pontos de atenção do analista específico
-        st.subheader(f"Pontos de Atenção de {analista_selecionado}")
-        pontos_atencao_analista = get_points_of_attention(df_analista)
-        
-        if not pontos_atencao_analista.empty:
-            st.table(pontos_atencao_analista[['Protocolo', 'Tempo de Análise']].assign(
-                **{'Tempo de Análise': pontos_atencao_analista['Tempo de Análise'].apply(format_timedelta)}
-            ))
-        else:
-            st.write("Nenhum ponto de atenção identificado para este analista.")
-
-    # Botão para salvar a planilha atualizada
-    if st.sidebar.button("Salvar Dados"):
-        save_data(df_total)
-        st.sidebar.success("Dados salvos com sucesso!")
